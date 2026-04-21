@@ -52,37 +52,48 @@ elif menu == "Add New Reel":
     st.header("📥 Extract Recipe")
     video_url = st.text_input("Paste Reel or Short URL:")
     
-    if st.button("Analyze Video"):
-        with st.spinner("Chef is watching the video..."):
-            # A. Scrape Metadata
-            ydl_opts = {'quiet': True, 'no_warnings': True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                desc = info.get('description', '')
-                title = info.get('title', 'New Recipe')
-
-            # B. AI Processing (Asking Gemini to itemize everything)
-            prompt = f"""
-            Analyze this cooking video description: {desc}
-            Create a structured recipe including:
-            - Title
-            - Dietary Labels (Vegan, High Protein, etc.)
-            - Itemized Ingredients with measurements
-            - Clear Instructions
-            - Health Vibe (Why is this good for you?)
-            """
-            response = model.generate_content(prompt)
+    # NEW: Add a text area as a fallback
+    manual_text = st.text_area("OR: Paste the caption/description here if the link fails:")
+    
+    if st.button("Analyze Recipe"):
+        with st.spinner("Chef is processing..."):
+            try:
+                content_to_analyze = ""
+                
+                # Try to scrape the link first
+                if video_url and not manual_text:
+                    try:
+                        ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(video_url, download=False)
+                            content_to_analyze = info.get('description', '')
+                            title = info.get('title', 'New Recipe')
+                    except:
+                        st.error("Instagram blocked the link! Please copy-paste the caption into the box below.")
+                        st.stop()
+                
+                # Use manual text if provided
+                elif manual_text:
+                    content_to_analyze = manual_text
+                    title = "New Saved Recipe"
+                
+                if content_to_analyze:
+                    prompt = f"Analyze this recipe content and create a structured card with Title, Labels (Vegan, etc), Ingredients, and Steps: {content_to_analyze}"
+                    response = model.generate_content(prompt)
+                    
+                    # Save to Supabase
+                    recipe_data = {
+                        "user_id": st.session_state.user.id,
+                        "title": title,
+                        "ingredients": response.text,
+                        "video_url": video_url if video_url else "Manual Entry"
+                    }
+                    supabase.table("recipes").insert(recipe_data).execute()
+                    st.success("Recipe added!")
+                    st.markdown(response.text)
             
-            # C. Save to Supabase
-            recipe_data = {
-                "user_id": st.session_state.user.id,
-                "title": title,
-                "ingredients": response.text,
-                "video_url": video_url
-            }
-            supabase.table("recipes").insert(recipe_data).execute()
-            st.success(f"Saved: {title}")
-            st.markdown(response.text)
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
 
 elif menu == "My Library":
     st.header("📖 Your Cookbook")
