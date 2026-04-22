@@ -15,7 +15,7 @@ gemini_key = os.getenv("GEMINI_API_KEY")
 # 2. Initialize Connections
 supabase: Client = create_client(url, key)
 genai.configure(api_key=gemini_key)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 st.set_page_config(page_title="The Reel Chef", page_icon="🍳")
 
