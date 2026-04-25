@@ -1,136 +1,154 @@
 import streamlit as st
 import os
+import json
+import threading
+import time
+import requests
+import io
+import base64
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import google.generativeai as genai
-import yt_dlp
-import time
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import instaloader
 
-# 1. Load Secrets
+# --- CONFIGURATION ---
 load_dotenv()
-url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
-gemini_key = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# 2. Initialize Connections
-supabase: Client = create_client(url, key)
-genai.configure(api_key=gemini_key)
+# Init Services
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
+L = instaloader.Instaloader()
 
-st.set_page_config(page_title="The Reel Chef", page_icon="🍳")
+# --- BACKGROUND API (Receiver for Extension) ---
+app_api = Flask(__name__)
+CORS(app_api)
 
-# 3. Simple Login Logic
+@app_api.route('/api/save', methods=['POST'])
+def save_from_extension():
+    data = request.json
+    # Data expected: {reelId, caption, pageUrl}
+    with open("ext_buffer.json", "w") as f:
+        json.dump(data, f)
+    return jsonify({"status": "Chef received the ID!"})
+
+def run_api():
+    app_api.run(port=5001, debug=False, use_reloader=False)
+
+if 'api_thread' not in st.session_state:
+    threading.Thread(target=run_api, daemon=True).start()
+    st.session_state.api_thread = True
+
+# --- CORE LOGIC: THE EXTRACTOR ---
+def process_reel_recipe(reel_id, caption, page_url):
+    try:
+        # 1. Fetch the actual video stream URL using the ID
+        st.info(f"Connecting to Instagram for Reel: {reel_id}...")
+        post = instaloader.Post.from_shortcode(L.context, reel_id)
+        video_url = post.video_url
+        
+        # 2. Stream video bytes into RAM (No local file saved)
+        video_resp = requests.get(video_url, stream=True)
+        video_bytes = io.BytesIO(video_resp.content)
+        
+        # 3. Upload to Gemini File API
+        st.info("Sending stream to Gemini AI...")
+        genai_file = genai.upload_file(video_bytes, mime_type="video/mp4")
+        
+        # 4. Wait for AI to process the video
+        while True:
+            file_status = genai.get_file(genai_file.name)
+            if file_status.state.name == "ACTIVE":
+                break
+            elif file_status.state.name == "FAILED":
+                raise Exception("AI failed to process the video stream.")
+            time.sleep(2)
+
+        # 5. Multimodal Extraction
+        st.success("AI is itemizing the recipe...")
+        prompt = f"""
+        Analyze this video and the caption: "{caption}".
+        Itemize the recipe exactly:
+        - Title of the dish
+        - Ingredients list with measurements
+        - Step-by-step cooking instructions
+        - Health tags (e.g., High Protein, Vegan, etc.)
+        """
+        
+        response = model.generate_content([prompt, genai_file])
+        recipe_text = response.text
+        
+        # 6. Save to Supabase
+        supabase.table("recipes").insert({
+            "user_id": str(st.session_state.user.id),
+            "title": caption[:50] if caption else f"Reel {reel_id}",
+            "ingredients": "See instructions below", # Or split the AI response
+            "instructions": recipe_text,            # This matches your column!
+            "video_url": page_url
+        }).execute()
+        
+        # Cleanup Gemini Cloud File
+        genai.delete_file(genai_file.name)
+        return recipe_text
+
+    except Exception as e:
+        return f"❌ Chef Error: {str(e)}"
+
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="The Reel Chef", page_icon="🍳", layout="centered")
+
 if 'user' not in st.session_state:
     st.title("🍳 The Reel Chef")
-    auth_mode = st.radio("Choose", ["Login", "Sign Up"])
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    
-    if st.button("Enter Kitchen"):
+    st.subheader("Login to your Kitchen")
+    e = st.text_input("Email")
+    p = st.text_input("Password", type="password")
+    if st.button("Log In"):
         try:
-            if auth_mode == "Sign Up":
-                res = supabase.auth.sign_up({"email": email, "password": password})
-                st.info("Check your email to confirm!")
-            else:
-                res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                st.session_state.user = res.user
-                st.rerun()
-        except Exception as e:
-            st.error(f"Auth Error: {e}")
-    st.stop()
+            res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+            st.session_state.user = res.user
+            st.rerun()
+        except:
+            st.error("Authentication Failed.")
+else:
+    st.sidebar.title("🍳 The Reel Chef")
+    choice = st.sidebar.radio("Go to:", ["Inbox", "My Cookbook"])
 
-# 4. Main App Interface
-st.sidebar.title("👨‍🍳 The Reel Chef")
-menu = st.sidebar.selectbox("Menu", ["My Library", "Add New Reel", "Meal Planner", "Logout"])
-
-if menu == "Logout":
-    supabase.auth.sign_out()
-    del st.session_state.user
-    st.rerun()
-
-elif menu == "Add New Reel":
-    st.header("📥 Extract Recipe")
-    video_url = st.text_input("Paste Reel or Short URL:")
-    
-    # NEW: Add a text area as a fallback
-    manual_text = st.text_area("OR: Paste the caption/description here if the link fails:")
-    
-    if st.button("Analyze Recipe"):
-        with st.spinner("Chef is processing..."):
-            try:
-                content_to_analyze = ""
-                
-                # Try to scrape the link first
-                if video_url and not manual_text:
-                    try:
-                        ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(video_url, download=False)
-                            content_to_analyze = info.get('description', '')
-                            title = info.get('title', 'New Recipe')
-                    except:
-                        st.error("Instagram blocked the link! Please copy-paste the caption into the box below.")
-                        st.stop()
-                
-                # Use manual text if provided
-                elif manual_text:
-                    content_to_analyze = manual_text
-                    title = "New Saved Recipe"
-                
-                if content_to_analyze:
-                    prompt = f"Analyze this recipe content and create a structured card with Title, Labels (Vegan, etc), Ingredients, and Steps: {content_to_analyze}"
-                    response = model.generate_content(prompt)
-                    
-                    # Save to Supabase
-                    recipe_data = {
-                        "user_id": st.session_state.user.id,
-                        "title": title,
-                        "ingredients": response.text,
-                        "video_url": video_url if video_url else "Manual Entry"
-                    }
-                    supabase.table("recipes").insert(recipe_data).execute()
-                    st.success("Recipe added!")
-                    st.markdown(response.text)
+    if choice == "Inbox":
+        st.header("📥 Extension Inbox")
+        if os.path.exists("ext_buffer.json"):
+            with open("ext_buffer.json", "r") as f:
+                incoming = json.load(f)
             
-            except Exception as e:
-                st.error(f"Something went wrong: {e}")
+            st.write(f"**Ready to process:** {incoming['pageUrl']}")
+            
+            if st.button("Itemize Recipe"):
+                with st.spinner("Processing..."):
+                    result = process_reel_recipe(
+                        incoming['reelId'], 
+                        incoming['caption'], 
+                        incoming['pageUrl']
+                    )
+                    st.markdown("### 📝 Itemized Recipe")
+                    st.markdown(result)
+                    # Clear buffer after success
+                    if "❌" not in result:
+                        os.remove("ext_buffer.json")
+        else:
+            st.info("Nothing in the inbox. Use the Chrome Extension while watching a Reel!")
 
-elif menu == "My Library":
-    st.header("📖 Your Cookbook")
-    res = supabase.table("recipes").select("*").eq("user_id", st.session_state.user.id).execute()
-    for r in res.data:
-        with st.expander(r['title']):
-            st.markdown(r['ingredients'])
-            st.video(r['video_url'])
-
-elif menu == "Meal Planner":
-    st.header("🗓️ The Reel Chef: Planner")
-    
-    # Get all recipes you've saved
-    res = supabase.table("recipes").select("*").eq("user_id", st.session_state.user.id).execute()
-    recipes = res.data
-    
-    if not recipes:
-        st.info("Your library is empty. Go add some reels first!")
-    else:
-        # Create a dictionary to map titles to their full data
-        recipe_map = {r['title']: r for r in recipes}
-        selected = st.multiselect("Select recipes for your grocery list:", list(recipe_map.keys()))
+    elif choice == "My Cookbook":
+        st.header("📖 My Saved Recipes")
+        recipes = supabase.table("recipes").select("*").eq("user_id", st.session_state.user.id).execute()
         
-        if st.button("Generate Smart List"):
-            # Combine ingredients for the AI to analyze
-            combined_text = ""
-            for title in selected:
-                combined_text += f"\n- {title}: {recipe_map[title]['ingredients']}"
-            
-            with st.spinner("Calculating nutrition and costs..."):
-                prompt = f"""
-                You are a nutrition coach and budget expert. 
-                Based on these selected recipes: {combined_text}
-                
-                1. Provide a CUMULATIVE shopping list (combine similar items).
-                2. HEALTH CHECK: Suggest one ingredient to add to improve fiber/protein.
-                3. SAVINGS: Point out if any ingredients can be bought in bulk.
-                """
-                ai_analysis = genai.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
-                st.markdown(ai_analysis.text)
+        if not recipes.data:
+            st.write("Your cookbook is empty.")
+        
+        for r in recipes.data:
+            with st.expander(f"🍲 {r['title']}"):
+                st.markdown(r['ingredients'])
+                st.caption(f"Source: {r['video_url']}")

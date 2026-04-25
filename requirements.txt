@@ -1,6 +1,0 @@
-streamlit
-supabase
-google-generativeai
-yt-dlp
-openai-whisper
-python-dotenv

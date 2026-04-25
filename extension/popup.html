@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            width: 220px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 15px;
+            text-align: center;
+            background-color: #f9f9f9;
+        }
+
+        h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        button {
+            background: #ff4b4b;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: bold;
+            width: 100%;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #e04343;
+        }
+
+        #status {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <h3>🍳 The Reel Chef</h3>
+    <button id="save">Send to Chef</button>
+    <p id="status">Ready to analyze...</p>
+    <script src="popup.js"></script>
+</body>
+
+</html>
