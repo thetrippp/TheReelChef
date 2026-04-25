@@ -1,22 +1,27 @@
 {
     "manifest_version": 3,
-    "name": "The Reel Chef",
+    "name": "Reel Chef - Convert Reels to Recipes",
     "version": "1.0",
+    "description": "Share Instagram cooking reels to your recipe library with one click",
     "permissions": [
         "activeTab",
-        "scripting"
+        "scripting",
+        "storage"
+    ],
+    "host_permissions": [
+        "https://www.instagram.com/*",
+        "http://localhost:5001/*"
     ],
     "action": {
-        "default_popup": "popup.html"
-    },
-    "content_scripts": [
-        {
-            "matches": [
-                "https://www.instagram.com/*"
-            ],
-            "js": [
-                "content.js"
-            ]
+        "default_popup": "popup.html",
+        "default_title": "Reel Chef - Share to Library",
+        "default_icons": {
+            "16": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='16'>🍳</text></svg>",
+            "48": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><text y='40' font-size='48'>🍳</text></svg>",
+            "128": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'><text y='110' font-size='128'>🍳</text></svg>"
         }
-    ]
+    },
+    "background": {
+        "service_worker": "background.js"
+    }
 }
